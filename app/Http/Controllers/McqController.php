@@ -16,7 +16,7 @@ class McqController extends Controller
             $path = $file->storeAs('uploads', $fileName, 'public');
             $imagePath = storage_path('app/public/' . $path);
 
-            $script = base_path('fivegride_grader.py');
+            $script = base_path('ori-generator.py');
             if (!file_exists($script)) {
                 return response()->json(['error' => 'Python script not found'], 500);
             }

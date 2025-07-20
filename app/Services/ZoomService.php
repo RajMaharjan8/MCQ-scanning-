@@ -92,7 +92,6 @@ class ZoomService
         }
 
         $meeting = json_decode($response, true);
-        dd($meeting);
         return [
             'meeting_id' => $meeting['id'],
             'join_url' => $meeting['join_url'],
