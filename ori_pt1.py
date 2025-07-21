@@ -3,6 +3,7 @@ import json
 import cv2
 import numpy as np
 
+# Constants
 ANSWER_KEY = {
     0: 3, 1: 2, 2: 1, 3: 1, 4: 1,
     5: 2, 6: 3, 7: 0, 8: 2, 9: 3,
@@ -19,14 +20,18 @@ ANSWER_KEY = {
 NUM_ROWS = 10
 NUM_COLS = 5
 NUM_CHOICES = 4
-BUBBLE_RADIUS = 11
+BUBBLE_RADIUS = 12
+
+# Detection thresholds
+MIN_FILL = 150    # minimum fill to consider a bubble marked
+MIN_DIFF = 60     # no longer used in new logic, but retained for optional debugging
 
 def process_answer_sheet(image_path):
     image = cv2.imread(image_path)
     if image is None:
         return {"error": f"Could not load image at path {image_path}"}
 
-    # Resize image
+    # Resize image for consistency
     RESIZE_WIDTH = 1000
     h0, w0 = image.shape[:2]
     aspect_ratio = h0 / w0
@@ -34,18 +39,19 @@ def process_answer_sheet(image_path):
     image_resized = cv2.resize(image, (RESIZE_WIDTH, resized_height))
     h, w = image_resized.shape[:2]
 
-    # Crop lower part, adjust fraction to better include first row
-    lower_frac = 0.55  # reduced from 0.60 to include more top area
+    # Crop answer area (usually lower half)
+    lower_frac = 0.55
     lower_part = image_resized[int(h * lower_frac):, :]
     lh, lw = lower_part.shape[:2]
 
-    # Bubble centers calculation
-    start_x = int(0.115 * lw)
+    # Grid positions (tuned for your layout)
+    start_x = int(0.116 * lw)
     start_y = int(0.12 * lh)
-    dx = int(0.0389 * lw)
-    dy = int(0.069 * lh)
-    col_offset = int(0.167 * lw)
+    dx = int(0.036 * lw)
+    dy = int(0.068 * lh)
+    col_offset = int(0.1683 * lw)
 
+    # Calculate bubble centers
     bubble_centers = []
     for col in range(NUM_COLS):
         x_offset = start_x + col * col_offset
@@ -57,64 +63,67 @@ def process_answer_sheet(image_path):
                 centers.append((int(x), int(y)))
             bubble_centers.append(centers)
 
-    # Threshold to find filled bubbles
+    # Preprocess image: grayscale & binary threshold
     gray = cv2.cvtColor(lower_part, cv2.COLOR_BGR2GRAY)
+    gray = cv2.GaussianBlur(gray, (5, 5), 0)
     _, thresh = cv2.threshold(gray, 180, 255, cv2.THRESH_BINARY_INV)
-
-    MIN_FILL = 100
-    MIN_DIFF = 60
 
     selected_answers = []
     multiple_marked = []
     blank_questions = []
+    incorrect_questions = []
     score = 0
 
+    # Analyze each question
     for q in range(NUM_ROWS * NUM_COLS):
         fills = []
         for c in range(NUM_CHOICES):
             cx, cy = bubble_centers[q][c]
             roi = thresh[cy - BUBBLE_RADIUS:cy + BUBBLE_RADIUS, cx - BUBBLE_RADIUS:cx + BUBBLE_RADIUS]
-            fill = np.sum(roi) // 255
+            fill = np.sum(roi) // 255  # count nonzero pixels
             fills.append(fill)
 
-        max_fill = max(fills)
-        max_idx = fills.index(max_fill)
-        sorted_fills = sorted(fills, reverse=True)
+        # Filter fills above threshold
+        valid_choices = [(i, f) for i, f in enumerate(fills) if f >= MIN_FILL]
 
-        if max_fill < MIN_FILL:
+        if len(valid_choices) == 0:
+            # Blank
             selected_answers.append(None)
             blank_questions.append(q + 1)
-        elif sorted_fills[0] - sorted_fills[1] < MIN_DIFF:
-            marked_choices = [i for i, f in enumerate(fills) if f >= sorted_fills[1]]
+        elif len(valid_choices) == 1:
+            # Single answer
+            selected_idx = valid_choices[0][0]
+            selected_answers.append(selected_idx)
+            correct = ANSWER_KEY.get(q)
+            if correct is not None and selected_idx == correct:
+                score += 1
+            else:
+                incorrect_questions.append(q + 1)
+        else:
+            # Multiple answers
+            marked_choices = [i for i, _ in valid_choices]
             selected_answers.append(marked_choices)
             multiple_marked.append(q + 1)
-        else:
-            selected_answers.append(max_idx)
-            correct = ANSWER_KEY.get(q)
-            if correct is not None and max_idx == correct:
-                score += 1
+            incorrect_questions.append(q + 1)
 
-    # Draw debug circles with colors:
-    # Green: correct, Orange: wrong single, Red: multiple marked, Blue: unmarked
+    # Generate debug image
     debug_img = lower_part.copy()
     for q, centers in enumerate(bubble_centers):
         answer = selected_answers[q]
         for c, (cx, cy) in enumerate(centers):
-            color = (255, 0, 0)  # Blue default
+            color = (255, 0, 0)  # blue default
             thickness = 2
+
             if answer is None:
-                pass  # blue circles
+                pass  # blue for skipped
             elif isinstance(answer, list):
                 if c in answer:
-                    color = (0, 0, 255)  # red multiple
+                    color = (0, 0, 255)  # red for multiple marked
                     thickness = 3
             else:
                 correct = ANSWER_KEY.get(q)
                 if c == answer:
-                    if correct == c:
-                        color = (0, 255, 0)  # green correct
-                    else:
-                        color = (0, 165, 255)  # orange wrong
+                    color = (0, 255, 0) if correct == c else (0, 165, 255)  # green or orange
             cv2.circle(debug_img, (cx, cy), BUBBLE_RADIUS, color, thickness)
 
     debug_path = "bubble_centers_debug.jpg"
@@ -125,13 +134,17 @@ def process_answer_sheet(image_path):
         "total_questions": len(ANSWER_KEY),
         "multiple_marked_questions": multiple_marked,
         "blank_questions": blank_questions,
+        "skipped_questions": blank_questions,
+        "skipped_count": len(blank_questions),
+        "incorrect_questions": incorrect_questions,
+        "incorrect_count": len(incorrect_questions),
         "selected_answers": selected_answers,
         "debug_image": debug_path
     }
 
 def main():
     if len(sys.argv) != 2:
-        print(json.dumps({"error": "Usage: python ori_pt1.py <image_path>"}))
+        print(json.dumps({"error": "Usage: python process_answer_sheet.py <image_path>"}))
         sys.exit(1)
     image_path = sys.argv[1]
     result = process_answer_sheet(image_path)

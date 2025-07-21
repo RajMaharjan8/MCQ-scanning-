@@ -1,77 +1,96 @@
 import sys
-import json
 import cv2
 import numpy as np
+import json
 
-def process_answer_sheet(image_path):
-    # Parameters for the bubble grid
+def crop_inside_border(image_path, output_path="cropped_bottom_half.jpg", debug_output_path="bubble_centers_debug.jpg"):
+    image = cv2.imread(image_path)
+    if image is None:
+        return {"error": f"Could not load image {image_path}"}
+
+    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    _, thresh = cv2.threshold(gray, 40, 255, cv2.THRESH_BINARY_INV)
+    contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
+    boxes = []
+    for cnt in contours:
+        x, y, w, h = cv2.boundingRect(cnt)
+        if 5 < w < 50 and 5 < h < 50:
+            boxes.append((x, y, x + w, y + h))
+
+    if len(boxes) < 4:
+        return {"error": "Not enough alignment markers detected."}
+
+    x_min = min(box[0] for box in boxes)
+    y_min = min(box[1] for box in boxes)
+    x_max = max(box[2] for box in boxes)
+    y_max = max(box[3] for box in boxes)
+
+    margin = 10
+    x_min += margin
+    y_min += margin
+    x_max -= margin
+    y_max -= margin
+
+    # Crop full inside region
+    full_crop = image[y_min:y_max, x_min:x_max]
+
+    # Get only bottom half
+    height = full_crop.shape[0]
+    bottom_half = full_crop[height // 2:, :]
+    cv2.imwrite(output_path, bottom_half)
+
+    # ======= Draw BUBBLE COORDINATES on bottom_half ==========
     NUM_ROWS = 10
     NUM_COLS = 5
     NUM_CHOICES = 4
-    bubble_radius = 10  # size of drawn circles, tune as needed
-    resize_width = 1000  # to normalize input sizes
+    bubble_radius = 14
 
-    # Load and resize the original image
-    image = cv2.imread(image_path)
-    if image is None:
-        return {"error": "Couldn't load image from path: " + image_path}
+    lh, lw = bottom_half.shape[:2]  # Get height (lh) and width (lw) of the bottom half image
 
-    h0, w0 = image.shape[:2]
-    aspect = h0 / w0
-    image_resized = cv2.resize(image, (resize_width, int(resize_width * aspect)))
-    h, w = image_resized.shape[:2]
+    start_x = int(0.08 * lw)       # Starting X coordinate (horizontal offset) for the first bubble in a column (A option of Q1)
+    start_y = int(0.235 * lh)       # Starting Y coordinate (vertical offset) for the first row of bubbles (row for Q1)
 
-    # Crop the lower part (approx 60%)
-    lower_frac = 0.55
-    lower_part = image_resized[int(h * lower_frac):, :]
+    dx = int(0.041 * lw)           # Horizontal distance between choices (A → B → C → D)
+    dy = int(0.067 * lh)            # Vertical distance between rows (Q1 → Q2 → Q3...)
 
-    lh, lw = lower_part.shape[:2]
-
-    # Calculate bubble centers relative to the resized lower part
-    start_x = int(0.115 * lw)
-    start_y = int(0.12 * lh)
-    dx = int(0.0389 * lw)          # horizontal gap between choices (A,B,C,D)
-    dy = int(0.069 * lh)           # vertical gap between rows
-    col_offset = int(0.167 * lw)   # horizontal gap between question columns
+    col_offset = int(0.187 * lw)    # Horizontal distance between question columns (e.g., Q1–10 column to Q11–20 column)
 
     bubble_centers = []
     for col in range(NUM_COLS):
         x_offset = start_x + col * col_offset
         for row in range(NUM_ROWS):
             y = start_y + row * dy
-            this_row_centers = []
+            row_centers = []
             for choice in range(NUM_CHOICES):
                 x = x_offset + choice * dx
-                this_row_centers.append((int(x), int(y)))
-            bubble_centers.append(this_row_centers)
+                row_centers.append((int(x), int(y)))
+            bubble_centers.append(row_centers)
 
-    # Draw debug circles on the lower part for all bubbles
-    debug_img = lower_part.copy()
-    for row_centers in bubble_centers:
-        for (x, y) in row_centers:
-            cv2.circle(debug_img, (x, y), bubble_radius, (0, 0, 255), 2)  # red circles
+    debug_img = bottom_half.copy()
+    for row in bubble_centers:
+        for (x, y) in row:
+            cv2.circle(debug_img, (x, y), bubble_radius, (0, 0, 255), 2)
 
-    # Save the debug image
-    debug_output_path = "bubble_centers_debug.jpg"
     cv2.imwrite(debug_output_path, debug_img)
 
-    # Return JSON result including the debug image filename (adjust if needed)
     return {
-        "message": "Processed image and marked bubble centers",
-        "debug_image": debug_output_path,
+        "message": "Successfully cropped and marked bubble centers.",
+        "cropped_img": output_path,
+        "debug_img": debug_output_path,
+        "crop_box": [x_min, y_min + height // 2, x_max, y_max],
         "total_questions": NUM_ROWS * NUM_COLS,
         "total_choices_per_question": NUM_CHOICES
     }
 
 def main():
     if len(sys.argv) != 2:
-        print(json.dumps({"error": "Usage: python ori_pt1.py <image_path>"}))
+        print(json.dumps({"error": "Usage: python crop_and_mark_bubbles.py <image_path>"}))
         sys.exit(1)
 
     image_path = sys.argv[1]
-    result = process_answer_sheet(image_path)
+    result = crop_inside_border(image_path)
     print(json.dumps(result, indent=2))
-
 
 if __name__ == "__main__":
     main()
