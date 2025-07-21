@@ -17,19 +17,20 @@ ANSWER_KEY = {
     45: 2, 46: 2, 47: 3, 48: 0, 49: 1,
 }
 
-NUM_ROWS = 10
+NUM_ROWS = 20
 NUM_COLS = 5
 NUM_CHOICES = 4
-BUBBLE_RADIUS = 12
+BUBBLE_RADIUS = 10
 
-MIN_FILL = 150   
-MIN_DIFF = 60     
+MIN_FILL = 150
+MIN_DIFF = 60
 
 def process_answer_sheet(image_path):
     image = cv2.imread(image_path)
     if image is None:
         return {"error": f"Could not load image at path {image_path}"}
 
+    # Resize
     RESIZE_WIDTH = 1000
     h0, w0 = image.shape[:2]
     aspect_ratio = h0 / w0
@@ -42,25 +43,29 @@ def process_answer_sheet(image_path):
     lower_part = image_resized[int(h * lower_frac):, :]
     lh, lw = lower_part.shape[:2]
 
-    # Grid positions (tuned for your layout)
-    start_x = int(0.116 * lw)
-    start_y = int(0.12 * lh)
-    dx = int(0.036 * lw)
-    dy = int(0.068 * lh)
-    col_offset = int(0.1683 * lw)
+    # Grid positions
+    start_x = int(0.110 * lw)
+    start_y = int(0.22 * lh)
+    dx = int(0.038 * lw)
+    dy = int(0.0325 * lh)
+    col_offset = int(0.170 * lw)
+    EXTRA_GAP = int(0.032 * lh)  # Add vertical spacing after 10th row
 
     # Calculate bubble centers
     bubble_centers = []
     for col in range(NUM_COLS):
         x_offset = start_x + col * col_offset
         for row in range(NUM_ROWS):
-            y = start_y + row * dy
+            # Add spacing for rows after 10
+            y_gap = EXTRA_GAP if row >= 10 else 0
+            y = start_y + row * dy + y_gap
             centers = []
             for choice in range(NUM_CHOICES):
                 x = x_offset + choice * dx
                 centers.append((int(x), int(y)))
             bubble_centers.append(centers)
 
+    # Image preprocessing
     gray = cv2.cvtColor(lower_part, cv2.COLOR_BGR2GRAY)
     gray = cv2.GaussianBlur(gray, (5, 5), 0)
     _, thresh = cv2.threshold(gray, 180, 255, cv2.THRESH_BINARY_INV)
@@ -76,7 +81,7 @@ def process_answer_sheet(image_path):
         for c in range(NUM_CHOICES):
             cx, cy = bubble_centers[q][c]
             roi = thresh[cy - BUBBLE_RADIUS:cy + BUBBLE_RADIUS, cx - BUBBLE_RADIUS:cx + BUBBLE_RADIUS]
-            fill = np.sum(roi) // 255  
+            fill = np.sum(roi) // 255
             fills.append(fill)
 
         valid_choices = [(i, f) for i, f in enumerate(fills) if f >= MIN_FILL]
@@ -98,23 +103,23 @@ def process_answer_sheet(image_path):
             multiple_marked.append(q + 1)
             incorrect_questions.append(q + 1)
 
+    # Draw bubbles for debug image
     debug_img = lower_part.copy()
     for q, centers in enumerate(bubble_centers):
         answer = selected_answers[q]
         for c, (cx, cy) in enumerate(centers):
-            color = (255, 0, 0)  
+            color = (255, 0, 0)  # Blue default
             thickness = 2
-
             if answer is None:
-                pass  
+                pass
             elif isinstance(answer, list):
                 if c in answer:
-                    color = (0, 0, 255) 
+                    color = (0, 0, 255)  # Red for multiple
                     thickness = 3
             else:
                 correct = ANSWER_KEY.get(q)
                 if c == answer:
-                    color = (0, 255, 0) if correct == c else (0, 165, 255) 
+                    color = (0, 255, 0) if correct == c else (0, 165, 255)  # Green if correct, orange if wrong
             cv2.circle(debug_img, (cx, cy), BUBBLE_RADIUS, color, thickness)
 
     debug_path = "bubble_centers_debug.jpg"
